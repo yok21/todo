@@ -18,13 +18,13 @@ PythonとStreamlitで開発した, タスク管理Webアプリケーションで
 10. アクセス制御：RLSによるユーザーごとのタスク管理
 
 使用技術
-開発言語：Python
-Webフレームワーク：Streamlit
-データベース：PostgreSQL(Supabase)
-認証：Supabase Auth
-アクセス制限：Row Level Security(RLS)
-バージョン管理：Git/GitHub
-デプロイ：Streamlit Community Cloud
+・開発言語：Python
+・Webフレームワーク：Streamlit
+・データベース：PostgreSQL(Supabase)
+・認証：Supabase Auth
+・アクセス制限：Row Level Security(RLS)
+・バージョン管理：Git/GitHub
+・デプロイ：Streamlit Community Cloud
 
 開発者
 GitHub: https://github.com/yok21
