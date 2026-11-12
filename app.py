@@ -1,6 +1,6 @@
-
 import streamlit as st
 from datetime import date
+from supabase import create_client  # ★追加
 
 st.set_page_config(
     page_title="My ToDo",
@@ -19,12 +19,165 @@ CATEGORIES = [
 PRIORITIES = ["高", "中", "低"]
 PRIORITY_ORDER = {"高": 0, "中": 1, "低": 2}
 
-# セッション内でタスクを管理
-if "tasks" not in st.session_state:
-    st.session_state.tasks = []
+# -----------------------------
+# ★追加：Supabase接続・ログイン
+# -----------------------------
+def create_supabase():
+    return create_client(
+        st.secrets["SUPABASE_URL"],
+        st.secrets["SUPABASE_KEY"]
+    )
 
-if "next_id" not in st.session_state:
-    st.session_state.next_id = 0
+def save_session(session):
+    st.session_state.access_token = session.access_token
+    st.session_state.refresh_token = session.refresh_token
+    st.session_state.user_id = session.user.id
+
+def clear_session():
+    for key in ["access_token", "refresh_token", "user_id"]:
+        st.session_state.pop(key, None)
+
+supabase = create_supabase()
+
+# 以前のセッションがあれば認証状態を復元
+if "access_token" in st.session_state:
+    try:
+        response = supabase.auth.set_session(
+            st.session_state.access_token,
+            st.session_state.refresh_token
+        )
+
+        if response.session is None:
+            raise ValueError("認証セッションがありません")
+
+        save_session(response.session)
+
+    except Exception:
+        clear_session()
+        st.warning("ログインの有効期限が切れました。")
+
+# ログインしていない場合
+if "user_id" not in st.session_state:
+
+    login_tab, signup_tab = st.tabs([
+        "ログイン", "新規登録"
+    ])
+
+    with login_tab:
+        with st.form("login_form"):
+            email = st.text_input("メールアドレス")
+            password = st.text_input(
+                "パスワード", type="password"
+            )
+            login = st.form_submit_button(
+                "ログイン", type="primary"
+            )
+
+            if login:
+                try:
+                    response = supabase.auth.sign_in_with_password({
+                        "email": email.strip(),
+                        "password": password
+                    })
+
+                    if response.session is None:
+                        st.error("ログインできませんでした。")
+                    else:
+                        save_session(response.session)
+                        st.rerun()
+
+                except Exception:
+                    st.error(
+                        "ログインに失敗しました。"
+                        "メールアドレスとパスワードを確認してください。"
+                    )
+
+    with signup_tab:
+        with st.form("signup_form"):
+            new_email = st.text_input(
+                "登録メールアドレス"
+            )
+            new_password = st.text_input(
+                "登録パスワード",
+                type="password"
+            )
+            signup = st.form_submit_button("新規登録")
+
+            if signup:
+                if not new_email.strip() or len(new_password) < 8:
+                    st.warning(
+                        "メールアドレスと8文字以上の"
+                        "パスワードを入力してください。"
+                    )
+                else:
+                    try:
+                        response = supabase.auth.sign_up({
+                            "email": new_email.strip(),
+                            "password": new_password
+                        })
+
+                        if response.session:
+                            save_session(response.session)
+                            st.rerun()
+                        else:
+                            st.success(
+                                "登録を受け付けました。"
+                                "確認メールが届いた場合は、"
+                                "メール内のリンクを開いてから"
+                                "ログインしてください。"
+                            )
+
+                    except Exception as e:
+                        st.error("登録に失敗しました。")
+                        st.error(str(e))
+    st.stop()
+
+# ログアウト
+with st.sidebar:
+    st.success("ログイン中")
+
+    if st.button("ログアウト"):
+        try:
+            supabase.auth.sign_out()
+        except Exception:
+            pass
+
+        clear_session()
+        st.rerun()
+
+# -----------------------------
+# ★追加：データベース操作
+# -----------------------------
+user_id = st.session_state.user_id
+
+def load_tasks():
+    response = (
+        supabase.table("tasks")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("created_at")
+        .execute()
+    )
+
+    tasks = response.data
+
+    # データベースの文字列をdate型に変換
+    for task in tasks:
+        if task["deadline"]:
+            task["deadline"] = date.fromisoformat(
+                task["deadline"]
+            )
+
+    return tasks
+
+try:
+    all_tasks = load_tasks()
+except Exception:
+    st.error(
+        "タスクを取得できませんでした。"
+        "Supabaseの接続とアクセス権限を確認してください。"
+    )
+    st.stop()
 
 # -----------------------------
 # 1. タスク追加
@@ -61,23 +214,28 @@ with st.expander("➕ 新しいタスクを追加", expanded=True):
             if not name.strip():
                 st.warning("タスク名を入力してください。")
             else:
-                st.session_state.tasks.append({
-                    "id": st.session_state.next_id,
-                    "name": name.strip(),
-                    "priority": priority,
-                    "category": category,
-                    "deadline": deadline,
-                    "done": False
-                })
+                try:
+                    # ★変更：Supabaseに保存
+                    supabase.table("tasks").insert({
+                        "user_id": user_id,
+                        "name": name.strip(),
+                        "priority": priority,
+                        "category": category,
+                        "deadline": deadline.isoformat(),
+                        "done": False
+                    }).execute()
 
-                st.session_state.next_id += 1
-                st.rerun()
+                    st.rerun()
+
+                except Exception:
+                    st.error(
+                        "タスクの追加に失敗しました。"
+                        "接続や権限を確認してください。"
+                    )
 
 # -----------------------------
 # 2. 進捗状況
 # -----------------------------
-all_tasks = st.session_state.tasks
-
 completed = sum(task["done"] for task in all_tasks)
 total = len(all_tasks)
 remaining = total - completed
@@ -93,6 +251,7 @@ c3.metric("未完了", remaining)
 c4.metric("完了率", f"{rate:.0%}")
 
 st.progress(rate)
+
 
 # -----------------------------
 # 3. 検索・絞り込み
@@ -153,7 +312,7 @@ if sort_by == "期限が近い順":
     filtered.sort(
         key=lambda task: (
             task["done"],
-            task["deadline"],
+            task["deadline"] or date.max,
             PRIORITY_ORDER[task["priority"]]
         )
     )
@@ -163,12 +322,14 @@ elif sort_by == "優先度が高い順":
         key=lambda task: (
             task["done"],
             PRIORITY_ORDER[task["priority"]],
-            task["deadline"]
+            task["deadline"] or date.max
         )
     )
 
 else:
-    filtered.sort(key=lambda task: task["id"])
+    filtered.sort(
+        key=lambda task: task["created_at"]
+    )
 
 # -----------------------------
 # 4. タスク一覧
@@ -186,22 +347,40 @@ for task in filtered:
             done = st.checkbox(
                 task["name"],
                 value=task["done"],
-                key=f"done_{task['id']}"
+                key=f"done_{user_id}_{task['id']}"
             )
 
             if done != task["done"]:
-                task["done"] = done
-                st.rerun()
+                try:
+                    # ★変更：Supabaseの完了状態を更新
+                    (
+                        supabase.table("tasks")
+                        .update({"done": done})
+                        .eq("id", task["id"])
+                        .eq("user_id", user_id)
+                        .execute()
+                    )
+
+                    st.rerun()
+
+                except Exception:
+                    st.error("完了状態の更新に失敗しました。")
 
         with middle:
+            deadline_text = (
+                task["deadline"].strftime("%Y-%m-%d")
+                if task["deadline"] else "未設定"
+            )
+
             st.caption(
                 f"優先度：{task['priority']} ｜ "
                 f"カテゴリ：{task['category']} ｜ "
-                f"期限：{task['deadline']:%Y-%m-%d}"
+                f"期限：{deadline_text}"
             )
 
             if (
                 not task["done"]
+                and task["deadline"] is not None
                 and task["deadline"] < date.today()
             ):
                 st.error("期限切れ")
@@ -215,16 +394,25 @@ for task in filtered:
         with right:
             if st.button(
                 "削除",
-                key=f"delete_{task['id']}"
+                key=f"delete_{user_id}_{task['id']}"
             ):
-                st.session_state.tasks = [
-                    t for t in all_tasks
-                    if t["id"] != task["id"]
-                ]
-                st.rerun()
+                try:
+                    # ★変更：Supabaseから削除
+                    (
+                        supabase.table("tasks")
+                        .delete()
+                        .eq("id", task["id"])
+                        .eq("user_id", user_id)
+                        .execute()
+                    )
+
+                    st.rerun()
+
+                except Exception:
+                    st.error("タスクの削除に失敗しました.")
 
 st.divider()
 st.caption(
-    "※ タスクは現在のセッション内でのみ保持されます。"
-    "セッション終了やサーバー再起動で消える場合があります。"
+    "※ タスクはSupabaseに保存されます。"
+    "ログアウト後も、再ログインすれば利用できます。"
 )
